@@ -53,3 +53,15 @@ GMAIL_RECIPIENT: str = os.environ.get("GMAIL_RECIPIENT", "")
 
 # Subject line of the daily report email.
 EMAIL_SUBJECT: str = os.environ.get("EMAIL_SUBJECT", "Daily Job Search Report")
+
+# ---------------------------------------------------------------------------
+# Job search filters
+# ---------------------------------------------------------------------------
+
+# Country or region to filter job results.
+# Only jobs whose inferred country/location contains this string (case-insensitive)
+# will be included.  Leave blank (empty string) to include jobs from all locations.
+# Examples: "United States", "United Kingdom", "Remote", "Canada"
+# Override with the COUNTRY environment variable when required.
+# Default: "" (no filter – all countries/regions included)
+COUNTRY: str = os.environ.get("COUNTRY", "")

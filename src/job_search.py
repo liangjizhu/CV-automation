@@ -9,6 +9,8 @@ from typing import Optional
 import requests
 from bs4 import BeautifulSoup
 
+import config
+
 PROFILE_PATH = os.path.join("data", "profile.json")
 JOBS_RAW_PATH = os.path.join("data", "jobs_raw.json")
 
@@ -154,9 +156,24 @@ def search_jobs(profile: dict) -> list[dict]:
 
     print(f"[job_search] Searching with keywords: {keywords}")
 
+    country_filter = (config.COUNTRY or "").strip()
+    if country_filter:
+        print(f"[job_search] Filtering by country/region: {country_filter!r}")
+
     all_jobs: list[dict] = []
     all_jobs.extend(search_remotive(keywords))
     all_jobs.extend(search_hn_who_is_hiring(keywords))
+
+    # Apply country/region filter when configured
+    if country_filter:
+        country_filter_lower = country_filter.lower()
+        all_jobs = [
+            job
+            for job in all_jobs
+            if country_filter_lower in job.get("country", "").lower()
+            or country_filter_lower in job.get("location", "").lower()
+        ]
+        print(f"[job_search] {len(all_jobs)} jobs remaining after country filter")
 
     # Deduplicate by URL
     seen_urls: set[str] = set()
