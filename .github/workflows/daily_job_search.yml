@@ -25,22 +25,27 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Decode CV from secret
+      - name: Restore CV
         env:
           CV_BASE64: ${{ secrets.CV_BASE64 }}
         run: |
-          if [ -z "$CV_BASE64" ]; then
-            echo "ERROR: CV_BASE64 secret is not set. Please encode your CV.pdf as base64 and add it as a repository secret named CV_BASE64." >&2
+          if [ -f cv/CV.pdf ]; then
+            echo "cv/CV.pdf found in repository"
+          elif [ -n "$CV_BASE64" ]; then
+            mkdir -p cv
+            echo "$CV_BASE64" | base64 --decode > cv/CV.pdf
+            echo "cv/CV.pdf decoded from CV_BASE64 secret"
+          else
+            echo "ERROR: No cv/CV.pdf in the repo and CV_BASE64 secret is not set." >&2
+            echo "Either commit your CV.pdf to the cv/ folder, or encode it as base64 and add it as a repository secret named CV_BASE64." >&2
             exit 1
           fi
-          mkdir -p cv
-          echo "$CV_BASE64" | base64 --decode > cv/CV.pdf
           CV_SIZE=$(wc -c < cv/CV.pdf)
           if [ "$CV_SIZE" -eq 0 ]; then
-            echo "ERROR: Decoded cv/CV.pdf is empty. Check that the CV_BASE64 secret contains a valid base64-encoded PDF." >&2
+            echo "ERROR: cv/CV.pdf is empty." >&2
             exit 1
           fi
-          echo "cv/CV.pdf written successfully ($CV_SIZE bytes)"
+          echo "CV ready ($CV_SIZE bytes)"
 
       - name: Run pipeline
         env:
