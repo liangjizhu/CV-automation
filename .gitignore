@@ -4,7 +4,6 @@ __pycache__/
 .env
 venv/
 .venv/
-cv/*.pdf
 data/jobs_raw.json
 data/jobs_scored.json
 output/report.html
