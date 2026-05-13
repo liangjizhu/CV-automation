@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import sys
 
 import pdfplumber
@@ -10,6 +11,37 @@ from openai import OpenAI
 import config
 
 PROFILE_PATH = os.path.join("data", "profile.json")
+
+# Characters of CV text used as the summary in keyword-based (no-LLM) extraction.
+_FALLBACK_SUMMARY_MAX_CHARS = 300
+
+# Common technical skills used for keyword-based extraction when the LLM is unavailable.
+_COMMON_SKILLS: list[str] = [
+    "Python", "Java", "JavaScript", "TypeScript", "C", "C++", "C#", "Go", "Rust",
+    "R", "MATLAB", "Scala", "Kotlin", "Swift", "PHP", "Ruby",
+    "Machine Learning", "Deep Learning", "TensorFlow", "PyTorch", "Keras", "scikit-learn",
+    "Natural Language Processing", "NLP", "Computer Vision", "Reinforcement Learning",
+    "Data Science", "Data Analysis", "Statistics", "Probability",
+    "SQL", "PostgreSQL", "MySQL", "SQLite", "NoSQL", "MongoDB", "Redis", "Elasticsearch",
+    "Docker", "Kubernetes", "AWS", "GCP", "Azure", "CI/CD", "DevOps",
+    "Git", "Linux", "Bash", "Shell", "REST", "API", "GraphQL", "Microservices",
+    "React", "Vue", "Angular", "Node.js", "Django", "Flask", "FastAPI", "Spring",
+    "Pandas", "NumPy", "Matplotlib", "Seaborn", "Jupyter",
+    "Agile", "Scrum", "LaTeX",
+]
+
+
+def _strip_code_fences(text: str) -> str:
+    """Remove leading/trailing markdown code fences from an LLM response.
+
+    Some providers (notably DeepSeek) occasionally wrap JSON in ```json fences
+    even when asked not to.  Stripping them keeps json.loads happy.
+    """
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+    if text.endswith("```"):
+        text = text.rsplit("```", 1)[0]
+    return text.strip()
 
 
 def extract_text_from_pdf(pdf_path: str) -> str:
@@ -30,6 +62,31 @@ def extract_text_from_pdf(pdf_path: str) -> str:
     return "\n".join(text_parts)
 
 
+def _extract_profile_without_llm(cv_text: str) -> dict:
+    """Build a minimal profile from CV text using keyword matching (no LLM required).
+
+    Used as a fallback when ``OPENAI_API_KEY`` is not configured.  The resulting
+    profile will have accurate skill keywords but no LLM-generated summary or
+    structured education/experience data.
+    """
+    found_skills: list[str] = []
+    text_lower = cv_text.lower()
+    for skill in _COMMON_SKILLS:
+        # Match whole words / phrases to avoid false positives.
+        pattern = r"\b" + re.escape(skill.lower()) + r"\b"
+        if re.search(pattern, text_lower):
+            found_skills.append(skill)
+
+    return {
+        "name": "Unknown",
+        "skills": found_skills,
+        "experience_years": 0,
+        "education": [],
+        "languages": [],
+        "summary": cv_text[:_FALLBACK_SUMMARY_MAX_CHARS].strip(),
+    }
+
+
 def extract_skills_with_llm(cv_text: str, client: OpenAI) -> dict:
     """Use an LLM to extract structured skills and profile from CV text."""
     prompt = (
@@ -46,7 +103,7 @@ def extract_skills_with_llm(cv_text: str, client: OpenAI) -> dict:
     )
 
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model=config.LLM_MODEL,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.2,
     )
@@ -54,7 +111,7 @@ def extract_skills_with_llm(cv_text: str, client: OpenAI) -> dict:
     content = response.choices[0].message.content
     if content is None:
         raise ValueError("LLM returned no content (content was None)")
-    raw = content.strip()
+    raw = _strip_code_fences(content.strip())
 
     try:
         profile = json.loads(raw)
@@ -67,20 +124,42 @@ def extract_skills_with_llm(cv_text: str, client: OpenAI) -> dict:
 def parse_cv(cv_path: str = config.CV_PATH) -> dict:
     """Full parse pipeline: read PDF → extract skills via LLM → save profile.
 
+    When ``OPENAI_API_KEY`` is not set the function falls back in order:
+    1. Load an existing ``data/profile.json`` if one is already present.
+    2. Extract text from the PDF and use keyword matching to build a minimal
+       profile (no network call required).
+
     Returns the profile dict.
     """
-    api_key = config.OPENAI_API_KEY
+    api_key = config.LLM_API_KEY
     if not api_key:
-        raise EnvironmentError(
-            "OPENAI_API_KEY is not set. Add it to config.py or export it as an environment variable."
-        )
+        # Fallback 1: reuse a previously saved profile.
+        if os.path.exists(PROFILE_PATH):
+            print(
+                f"[parse_cv] LLM_API_KEY not set; loading existing profile from {PROFILE_PATH}"
+            )
+            with open(PROFILE_PATH, encoding="utf-8") as fh:
+                return json.load(fh)
 
-    client = OpenAI(api_key=api_key)
+        # Fallback 2: keyword extraction from the PDF (no LLM).
+        print(
+            "[parse_cv] WARNING: LLM_API_KEY is not set. "
+            "Falling back to keyword-based skill extraction."
+        )
+        cv_text = extract_text_from_pdf(cv_path)
+        profile = _extract_profile_without_llm(cv_text)
+        os.makedirs("data", exist_ok=True)
+        with open(PROFILE_PATH, "w", encoding="utf-8") as fh:
+            json.dump(profile, fh, indent=2, ensure_ascii=False)
+        print(f"[parse_cv] Keyword-based profile saved to {PROFILE_PATH}")
+        return profile
+
+    client = OpenAI(api_key=api_key, base_url=config.LLM_BASE_URL or None)
 
     print(f"[parse_cv] Extracting text from {cv_path} …")
     cv_text = extract_text_from_pdf(cv_path)
 
-    print("[parse_cv] Extracting skills with LLM …")
+    print(f"[parse_cv] Extracting skills with LLM ({config.LLM_MODEL}) …")
     profile = extract_skills_with_llm(cv_text, client)
 
     os.makedirs("data", exist_ok=True)

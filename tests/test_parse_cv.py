@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.parse_cv import extract_skills_with_llm, parse_cv
+from src.parse_cv import extract_skills_with_llm, parse_cv, _extract_profile_without_llm
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +53,24 @@ def test_extract_skills_invalid_json():
 
 
 # ---------------------------------------------------------------------------
+# _extract_profile_without_llm
+# ---------------------------------------------------------------------------
+
+def test_extract_profile_without_llm_finds_known_skills():
+    cv_text = "Experienced Python developer with Docker and AWS knowledge."
+    result = _extract_profile_without_llm(cv_text)
+    assert "Python" in result["skills"]
+    assert "Docker" in result["skills"]
+    assert "AWS" in result["skills"]
+
+
+def test_extract_profile_without_llm_empty_text():
+    result = _extract_profile_without_llm("")
+    assert isinstance(result["skills"], list)
+    assert result["name"] == "Unknown"
+
+
+# ---------------------------------------------------------------------------
 # parse_cv – integration
 # ---------------------------------------------------------------------------
 
@@ -60,7 +78,9 @@ def test_extract_skills_invalid_json():
 @patch("src.parse_cv.OpenAI")
 @patch("src.parse_cv.extract_text_from_pdf")
 def test_parse_cv_saves_profile(mock_extract_text, mock_openai_cls, mock_config):
-    mock_config.OPENAI_API_KEY = "test-key"
+    mock_config.LLM_API_KEY = "test-key"
+    mock_config.LLM_BASE_URL = ""
+    mock_config.LLM_MODEL = "deepseek-chat"
     mock_config.CV_PATH = "cv/CV.pdf"
     mock_extract_text.return_value = "Jane Doe, Python developer"
 
@@ -89,16 +109,50 @@ def test_parse_cv_saves_profile(mock_extract_text, mock_openai_cls, mock_config)
 
 
 @patch("src.parse_cv.config")
-def test_parse_cv_no_api_key(mock_config):
-    mock_config.OPENAI_API_KEY = ""
-    with pytest.raises(EnvironmentError, match="OPENAI_API_KEY"):
-        parse_cv(cv_path="cv/CV.pdf")
+def test_parse_cv_no_api_key_falls_back_to_existing_profile(mock_config):
+    """When LLM_API_KEY is missing but profile.json exists, load from it."""
+    mock_config.LLM_API_KEY = ""
+    mock_config.CV_PATH = "cv/CV.pdf"
+    saved_profile = {"name": "Jane", "skills": ["Python"], "summary": "Dev"}
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        profile_path = os.path.join(tmpdir, "profile.json")
+        with open(profile_path, "w") as fh:
+            json.dump(saved_profile, fh)
+
+        with patch("src.parse_cv.PROFILE_PATH", profile_path):
+            result = parse_cv(cv_path="cv/CV.pdf")
+
+    assert result["name"] == "Jane"
+    assert "Python" in result["skills"]
+
+
+@patch("src.parse_cv.extract_text_from_pdf")
+@patch("src.parse_cv.config")
+def test_parse_cv_no_api_key_uses_keyword_extraction(mock_config, mock_extract_text):
+    """When API key and profile are both absent, keyword extraction is used."""
+    mock_config.LLM_API_KEY = ""
+    mock_config.CV_PATH = "cv/CV.pdf"
+    mock_extract_text.return_value = "Experienced Python and Docker developer"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        profile_path = os.path.join(tmpdir, "profile.json")
+        # No pre-existing profile.json
+
+        with patch("src.parse_cv.PROFILE_PATH", profile_path):
+            result = parse_cv(cv_path="cv/CV.pdf")
+
+        assert "Python" in result["skills"]
+        assert "Docker" in result["skills"]
+        assert os.path.exists(profile_path)
 
 
 @patch("src.parse_cv.config")
 @patch("src.parse_cv.OpenAI")
 def test_parse_cv_missing_pdf(mock_openai_cls, mock_config):
-    mock_config.OPENAI_API_KEY = "test-key"
+    mock_config.LLM_API_KEY = "test-key"
+    mock_config.LLM_BASE_URL = ""
+    mock_config.LLM_MODEL = "deepseek-chat"
     mock_openai_cls.return_value = MagicMock()
 
     with pytest.raises(FileNotFoundError):
